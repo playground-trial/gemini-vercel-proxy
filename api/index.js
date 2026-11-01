@@ -7,42 +7,37 @@ export default async function handler(request) {
     url.port = '443';
     url.protocol = 'https:';
 
-    const newHeaders = new Headers(request.headers);
-    newHeaders.delete('host');
-    newHeaders.delete('content-length');
+    // 核心修复：丢弃原有请求头，仅重新构建合法的白名单请求头
+    const safeHeaders = new Headers();
+    safeHeaders.set('Content-Type', 'application/json');
+    if (request.headers.has('Authorization')) {
+      safeHeaders.set('Authorization', request.headers.get('Authorization'));
+    }
 
+    // 快速响应客户端的非对话探测，避免 404
     if (request.method !== 'POST') {
-      return fetch(url.toString(), {
-        method: request.method,
-        headers: newHeaders
-      });
+      return new Response("Vercel Proxy is active", { status: 200 });
     }
 
+    // 解析并清洗请求体
     const bodyText = await request.text();
-    let newBody = bodyText;
+    if (!bodyText) return new Response("Empty body", { status: 400 });
 
-    if (bodyText) {
-      try {
-        const bodyJson = JSON.parse(bodyText);
-        let modified = false;
-        if (bodyJson.thinking !== undefined) { delete bodyJson.thinking; modified = true; }
-        if (bodyJson.reasoning !== undefined) { delete bodyJson.reasoning; modified = true; }
-        if (modified) { newBody = JSON.stringify(bodyJson); }
-      } catch (parseError) {
-        // 如果不是合法 JSON，跳过清洗直接放行，防止代码崩溃
-      }
-    }
+    const bodyJson = JSON.parse(bodyText);
+    delete bodyJson.thinking;
+    delete bodyJson.reasoning;
 
+    // 使用纯净的请求头转发至 Google
     return await fetch(url.toString(), {
       method: 'POST',
-      headers: newHeaders,
-      body: newBody || undefined
+      headers: safeHeaders,
+      body: JSON.stringify(bodyJson)
     });
-
+    
   } catch (err) {
-    // 如果依然出错，将原本隐藏的 Vercel 崩溃信息转化为可见的明文报错
+    // 将可能出现的崩溃信息转换为面板可见的明文报错
     return new Response(JSON.stringify({ 
-      error: "Vercel Proxy Error", 
+      error: "Vercel Execution Error", 
       details: err.message 
     }), {
       status: 500,
